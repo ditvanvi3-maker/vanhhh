@@ -101,18 +101,28 @@ local function setStatus(msg)
     status.Text = "Trạng thái: " .. msg
 end
 
-toggle.Activated:Connect(function()
-    CFG.Enabled = not CFG.Enabled
-
+local function updateToggle()
     if CFG.Enabled then
         toggle.Text = "AUTO FARM: ON"
-        toggle.BackgroundColor3 = Color3.fromRGB(40, 150, 65)
-        setStatus("Đã bật")
+        toggle.BackgroundColor3 =
+            Color3.fromRGB(40, 150, 65)
+        setStatus("Đã tự động bật")
     else
         toggle.Text = "AUTO FARM: OFF"
-        toggle.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
+        toggle.BackgroundColor3 =
+            Color3.fromRGB(160, 45, 45)
         setStatus("Đã tắt")
     end
+end
+
+-- Tự bật ngay khi chạy
+CFG.Enabled = true
+updateToggle()
+
+-- Nút ON/OFF
+toggle.Activated:Connect(function()
+    CFG.Enabled = not CFG.Enabled
+    updateToggle()
 end)
 
 -- ================= HELPERS =================
@@ -176,51 +186,92 @@ end
 
 -- ================= PERFECT CLICK (giữa màn hình) =================
 
+
 local function simulateCenterClick()
     local camera = workspace.CurrentCamera
     if not camera then return false end
 
     local viewport = camera.ViewportSize
-    local cx = viewport.X / 2
-    local cy = viewport.Y / 2
 
-    -- Cách 1: VirtualInputManager (ổn định nhất)
+    -- Vị trí góc dưới bên phải
+    local cx = math.floor(viewport.X * 0.92)
+    local cy = math.floor(viewport.Y * 0.90)
+
+    -- Cách 1: VirtualInputManager
     local ok = pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+        VirtualInputManager:SendMouseButtonEvent(
+            cx, cy, 0, true, game, 1
+        )
+
         task.wait(CFG.PerfectClickHold)
-        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+
+        VirtualInputManager:SendMouseButtonEvent(
+            cx, cy, 0, false, game, 1
+        )
     end)
 
-    if ok then return true end
-
-    -- Cách 2: mouse1click (một số executor)
-    if mouse1click then
-        pcall(function()
-            mouse1click()
-        end)
+    if ok then
         return true
     end
 
-    -- Cách 3: fire GUI "Nhấn để đá!" nếu tìm thấy
+    -- Cách 2: mouse1click
+    if mouse1click then
+        local success = pcall(function()
+            mouse1click()
+        end)
+
+        if success then
+            return true
+        end
+    end
+
+    -- Cách 3: Tìm nút GUI liên quan đến đá bóng
     for _, obj in ipairs(PlayerGui:GetDescendants()) do
-        if obj:IsA("GuiButton") or obj:IsA("TextButton") or obj:IsA("ImageButton") then
-            local text = (obj:FindFirstChildOfClass("TextLabel") and obj:FindFirstChildOfClass("TextLabel").Text)
-                or obj.Text
-                or ""
-            if string.find(string.lower(text), "nhấn") or string.find(string.lower(text), "đá") then
+
+        if obj:IsA("GuiButton") then
+
+            local text = ""
+
+            pcall(function()
+                text = obj.Text or ""
+
+                local label = obj:FindFirstChildOfClass("TextLabel")
+                if label then
+                    text = text .. " " .. label.Text
+                end
+            end)
+
+            text = string.lower(text)
+
+            if string.find(text, "nhấn")
+                or string.find(text, "đá") then
+
                 if getconnections then
-                    for _, sig in ipairs({"MouseButton1Click", "Activated"}) do
-                        local conns = pcall(function() return getconnections(obj[sig]) end)
-                        if conns then
-                            for _, c in ipairs(conns) do
-                                pcall(function() c:Fire() end)
+                    for _, sig in ipairs({
+                        "MouseButton1Click",
+                        "Activated"
+                    }) do
+
+                        local signalOk, connections = pcall(function()
+                            return getconnections(obj[sig])
+                        end)
+
+                        if signalOk and connections then
+                            for _, connection in ipairs(connections) do
+                                pcall(function()
+                                    connection:Fire()
+                                end)
                             end
                         end
                     end
                 end
+
                 if firesignal then
-                    pcall(function() firesignal(obj.Activated) end)
+                    pcall(function()
+                        firesignal(obj.Activated)
+                    end)
                 end
+
                 return true
             end
         end
