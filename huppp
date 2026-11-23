@@ -1,7 +1,7 @@
--- Auto Kick + Safe Run + Auto Collect
--- Dành cho môi trường executor hỗ trợ getgenv/getconnections/firesignal/VirtualInputManager.
--- Lưu ý: vị trí đích lấy theo file FARTEZ: workspace.Areas.KickReady.
--- Sau khi auto click KickButton → chờ 1s → giả lập nhấn giữa màn hình (perfect).
+-- Auto Kick + Safe Run + Auto Collect (hardened click)
+-- Executor: getgenv / getconnections / firesignal / VirtualInputManager
+-- Target: workspace.Areas.KickReady
+-- Patch: force perfect khi kẹt chờ > 2s, bắn thêm 1 lần sau khi thoát chờ, click lệch trái + retry
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -34,25 +34,17 @@ local CFG = {
     StuckTimeout = 3,
     ScanDelay = 0.1,
 
-    -- Perfect timing
-    PerfectDelay = 0.45,          -- giây sau khi click KickButton
-    PerfectClickHold = 0.06,     -- thời gian giữ chuột
+    PerfectDelay = 0.45,
+    PerfectClickHold = 0.06,
+    WaitKickForceTime = 2,       -- force perfect nếu kẹt chờ đá > 2s
+    ClickRetry = 3,              -- số lần thử mỗi lần gọi simulate
+    ClickRetryGap = 0.08,
 }
 
--- Các rarity có trong bảng mapping của FARTEZ.
 local RARITIES = {
-    Common = true,
-    Rare = true,
-    Epic = true,
-    Legendary = true,
-    Mythic = true,
-    Godly = true,
-    Secret = true,
-    Divine = true,
-    Hacked = true,
-    OG = true,
-    Celestial = true,
-    Eternal = true,
+    Common = true, Rare = true, Epic = true, Legendary = true,
+    Mythic = true, Godly = true, Secret = true, Divine = true,
+    Hacked = true, OG = true, Celestial = true, Eternal = true,
 }
 
 -- ================= GUI =================
@@ -104,22 +96,18 @@ end
 local function updateToggle()
     if CFG.Enabled then
         toggle.Text = "AUTO FARM: ON"
-        toggle.BackgroundColor3 =
-            Color3.fromRGB(40, 150, 65)
+        toggle.BackgroundColor3 = Color3.fromRGB(40, 150, 65)
         setStatus("Đã tự động bật")
     else
         toggle.Text = "AUTO FARM: OFF"
-        toggle.BackgroundColor3 =
-            Color3.fromRGB(160, 45, 45)
+        toggle.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
         setStatus("Đã tắt")
     end
 end
 
--- Tự bật ngay khi chạy
 CFG.Enabled = true
 updateToggle()
 
--- Nút ON/OFF
 toggle.Activated:Connect(function()
     CFG.Enabled = not CFG.Enabled
     updateToggle()
@@ -130,14 +118,9 @@ end)
 local function getCharacter()
     local char = player.Character
     if not char then return end
-
     local root = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
-
-    if not root or not hum or hum.Health <= 0 then
-        return
-    end
-
+    if not root or not hum or hum.Health <= 0 then return end
     return char, root, hum
 end
 
@@ -145,136 +128,115 @@ local function getKickTarget()
     local areas = workspace:FindFirstChild("Areas")
     local target = areas and areas:FindFirstChild("KickReady")
     if not target then return nil end
-
-    if target:IsA("BasePart") then
-        return target.CFrame
-    elseif target:IsA("Model") then
-        return target:GetPivot()
-    end
-
+    if target:IsA("BasePart") then return target.CFrame end
+    if target:IsA("Model") then return target:GetPivot() end
     return nil
 end
 
 local function findKickButton()
     local hud = PlayerGui:FindFirstChild("HUD")
     local btn = hud and hud:FindFirstChild("KickButton", true)
-
-    if btn and btn:IsA("GuiButton") then
-        return btn
-    end
-
+    if btn and btn:IsA("GuiButton") then return btn end
     for _, obj in ipairs(PlayerGui:GetDescendants()) do
         if obj.Name == "KickButton" and obj:IsA("GuiButton") then
             return obj
         end
     end
-
     return nil
 end
 
 local function forceTP(root, targetCF)
     if not root or not root.Parent then return false end
-
     local ok = pcall(function()
         root.CFrame = targetCF
         root.AssemblyLinearVelocity = Vector3.zero
         root.AssemblyAngularVelocity = Vector3.zero
     end)
-
     return ok
 end
 
--- ================= PERFECT CLICK (giữa màn hình) =================
+-- ================= PERFECT CLICK (hardened) =================
 
+local function sendVIMClick(cx, cy)
+    local ok = pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+        task.wait(CFG.PerfectClickHold)
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+    end)
+    return ok
+end
+
+local function tryGUIButtonFire()
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if not obj:IsA("GuiButton") then continue end
+
+        local text = ""
+        pcall(function()
+            text = (obj.Text or "")
+            local label = obj:FindFirstChildOfClass("TextLabel")
+            if label then text = text .. " " .. (label.Text or "") end
+        end)
+        text = string.lower(text)
+
+        if not (string.find(text, "nhấn") or string.find(text, "đá") or string.find(text, "perfect") or string.find(text, "kick")) then
+            continue
+        end
+
+        if getconnections then
+            for _, sig in ipairs({"MouseButton1Click", "Activated", "MouseButton1Down"}) do
+                local ok, connections = pcall(function() return getconnections(obj[sig]) end)
+                if ok and connections then
+                    for _, conn in ipairs(connections) do
+                        pcall(function() conn:Fire() end)
+                    end
+                end
+            end
+        end
+
+        if firesignal then
+            pcall(function() firesignal(obj.Activated) end)
+            pcall(function() firesignal(obj.MouseButton1Click) end)
+        end
+
+        return true
+    end
+    return false
+end
 
 local function simulateCenterClick()
     local camera = workspace.CurrentCamera
     if not camera then return false end
 
     local viewport = camera.ViewportSize
+    if viewport.X < 10 or viewport.Y < 10 then return false end
 
-    -- Vị trí góc dưới bên phải
-    local cx = math.floor(viewport.X * 0.92)
-    local cy = math.floor(viewport.Y * 0.90)
+    -- 2 vị trí: lệch trái + gần giữa dưới
+    local positions = {
+        {math.floor(viewport.X * 0.32), math.floor(viewport.Y * 0.78)},
+        {math.floor(viewport.X * 0.28), math.floor(viewport.Y * 0.76)},
+        {math.floor(viewport.X * 0.36), math.floor(viewport.Y * 0.80)},
+    }
 
-    -- Cách 1: VirtualInputManager
-    local ok = pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(
-            cx, cy, 0, true, game, 1
-        )
-
-        task.wait(CFG.PerfectClickHold)
-
-        VirtualInputManager:SendMouseButtonEvent(
-            cx, cy, 0, false, game, 1
-        )
-    end)
-
-    if ok then
-        return true
-    end
-
-    -- Cách 2: mouse1click
-    if mouse1click then
-        local success = pcall(function()
-            mouse1click()
-        end)
-
-        if success then
-            return true
-        end
-    end
-
-    -- Cách 3: Tìm nút GUI liên quan đến đá bóng
-    for _, obj in ipairs(PlayerGui:GetDescendants()) do
-
-        if obj:IsA("GuiButton") then
-
-            local text = ""
-
-            pcall(function()
-                text = obj.Text or ""
-
-                local label = obj:FindFirstChildOfClass("TextLabel")
-                if label then
-                    text = text .. " " .. label.Text
-                end
-            end)
-
-            text = string.lower(text)
-
-            if string.find(text, "nhấn")
-                or string.find(text, "đá") then
-
-                if getconnections then
-                    for _, sig in ipairs({
-                        "MouseButton1Click",
-                        "Activated"
-                    }) do
-
-                        local signalOk, connections = pcall(function()
-                            return getconnections(obj[sig])
-                        end)
-
-                        if signalOk and connections then
-                            for _, connection in ipairs(connections) do
-                                pcall(function()
-                                    connection:Fire()
-                                end)
-                            end
-                        end
-                    end
-                end
-
-                if firesignal then
-                    pcall(function()
-                        firesignal(obj.Activated)
-                    end)
-                end
-
+    for attempt = 1, CFG.ClickRetry do
+        -- 1. VirtualInputManager trên nhiều vị trí
+        for _, pos in ipairs(positions) do
+            if sendVIMClick(pos[1], pos[2]) then
                 return true
             end
         end
+
+        -- 2. mouse1click nếu executor hỗ trợ
+        if mouse1click then
+            local ok = pcall(mouse1click)
+            if ok then return true end
+        end
+
+        -- 3. Fire GUI button text match
+        if tryGUIButtonFire() then
+            return true
+        end
+
+        task.wait(CFG.ClickRetryGap)
     end
 
     return false
@@ -284,19 +246,13 @@ end
 
 local function activateKick()
     local button = findKickButton()
-
-    if not button or not button.Visible then
-        return false
-    end
+    if not button or not button.Visible then return false end
 
     local activated = false
 
     if getconnections then
         for _, signalName in ipairs({"MouseButton1Click", "Activated"}) do
-            local ok, connections = pcall(function()
-                return getconnections(button[signalName])
-            end)
-
+            local ok, connections = pcall(function() return getconnections(button[signalName]) end)
             if ok and connections then
                 for _, connection in ipairs(connections) do
                     pcall(function()
@@ -309,31 +265,25 @@ local function activateKick()
     end
 
     if not activated and firesignal then
-        local ok = pcall(function()
-            firesignal(button.Activated)
-        end)
+        local ok = pcall(function() firesignal(button.Activated) end)
         activated = ok
     end
 
     if not activated and KickRemote and KickRemote:IsA("RemoteEvent") then
-        local ok = pcall(function()
-            KickRemote:FireServer(1)
-        end)
+        local ok = pcall(function() KickRemote:FireServer(1) end)
         activated = ok
     end
 
-    -- Sau khi kick thành công → chờ PerfectDelay rồi nhấn giữa màn hình
     if activated then
         task.spawn(function()
             task.wait(CFG.PerfectDelay)
-            if CFG.Enabled then
-                setStatus("Đang nhấn perfect...")
-                local success = simulateCenterClick()
-                if success then
-                    setStatus("Perfect đã gửi")
-                else
-                    setStatus("Không gửi được perfect click")
-                end
+            if not CFG.Enabled then return end
+            setStatus("Đang nhấn perfect...")
+            local success = simulateCenterClick()
+            setStatus(success and "Perfect đã gửi" or "Perfect fail — retry")
+            if not success then
+                task.wait(0.12)
+                simulateCenterClick()
             end
         end)
     end
@@ -344,10 +294,7 @@ end
 -- ================= COLLECT =================
 
 local function getHitbox(obj)
-    if obj:IsA("BasePart") then
-        return obj
-    end
-
+    if obj:IsA("BasePart") then return obj end
     return obj:FindFirstChild("RootPart", true)
         or obj:FindFirstChild("Hitbox", true)
         or obj:FindFirstChildWhichIsA("BasePart", true)
@@ -360,34 +307,23 @@ local function collectNearby(root, safePosition)
     local current = root.Position
     local flatCurrent = Vector3.new(current.X, 0, current.Z)
     local flatSafe = Vector3.new(safePosition.X, 0, safePosition.Z)
-
     local safeVector = flatSafe - flatCurrent
     if safeVector.Magnitude < 0.01 then return end
-
     local safeDirection = safeVector.Unit
 
     for _, obj in ipairs(debris:GetChildren()) do
         if not CFG.Enabled then return end
-
-        if not RARITIES[obj.Name] then
-            continue
-        end
+        if not RARITIES[obj.Name] then continue end
 
         local hitbox = getHitbox(obj)
-        if not hitbox or not hitbox:IsA("BasePart") then
-            continue
-        end
+        if not hitbox or not hitbox:IsA("BasePart") then continue end
 
         local distance = (root.Position - hitbox.Position).Magnitude
-        if distance > CFG.CollectRadius then
-            continue
-        end
+        if distance > CFG.CollectRadius then continue end
 
         local flatObject = Vector3.new(hitbox.Position.X, 0, hitbox.Position.Z)
         local toObject = flatObject - flatCurrent
-        if toObject.Magnitude < 0.01 then
-            toObject = safeDirection
-        end
+        if toObject.Magnitude < 0.01 then toObject = safeDirection end
 
         if safeDirection:Dot(toObject.Unit) >= -0.2 then
             if firetouchinterest then
@@ -399,10 +335,7 @@ local function collectNearby(root, safePosition)
                     end)
                 end)
             end
-
-            pcall(function()
-                CollectRemote:FireServer(obj.Name)
-            end)
+            pcall(function() CollectRemote:FireServer(obj.Name) end)
         end
     end
 end
@@ -412,12 +345,10 @@ end
 local function walkBack(root, hum, safePosition, targetCF)
     local lastPosition = root.Position
     local stuckTime = 0
-
     setStatus("Đang thu thập và đi bộ về KickReady")
 
     while CFG.Enabled and hum.Health > 0 and root.Parent do
         local distance = (root.Position - safePosition).Magnitude
-
         if distance <= CFG.SafeRadius then
             setStatus("Đã về KickReady")
             return true
@@ -425,9 +356,7 @@ local function walkBack(root, hum, safePosition, targetCF)
 
         pcall(function()
             local state = hum:GetState()
-
-            if hum.Sit
-                or hum.PlatformStand
+            if hum.Sit or hum.PlatformStand
                 or state == Enum.HumanoidStateType.Ragdoll
                 or state == Enum.HumanoidStateType.FallingDown then
                 hum.Sit = false
@@ -453,14 +382,13 @@ local function walkBack(root, hum, safePosition, targetCF)
         end
 
         if stuckTime >= CFG.StuckTimeout then
-            setStatus("Bị kẹt — thử quay về KickReady")
+            setStatus("Bị kẹt — TP về KickReady")
             forceTP(root, targetCF + Vector3.new(0, 3, 0))
             return false
         end
 
         task.wait(CFG.ScanDelay)
     end
-
     return false
 end
 
@@ -498,6 +426,8 @@ task.spawn(function()
 
             local startPosition = root.Position
             local deadline = os.clock() + CFG.LaunchTimeout
+            local waitKickStart = os.clock()
+            local forcedPerfect = false
 
             setStatus("Đang chờ cú đá")
 
@@ -506,12 +436,18 @@ task.spawn(function()
 
                 if button and button.Visible then
                     activateKick()
-                    -- chỉ fire 1 lần rồi chờ perfect + launch
                     break
                 end
 
-                if not root.Parent then return end
+                -- Force perfect nếu kẹt chờ > 2s
+                if not forcedPerfect and (os.clock() - waitKickStart) >= CFG.WaitKickForceTime then
+                    setStatus("Chờ quá lâu — force perfect")
+                    simulateCenterClick()
+                    forcedPerfect = true
+                    waitKickStart = os.clock()
+                end
 
+                if not root.Parent then return end
                 if (root.Position - startPosition).Magnitude > CFG.LaunchDistance then
                     break
                 end
@@ -519,11 +455,12 @@ task.spawn(function()
                 task.wait(0.1)
             end
 
-            if not CFG.Enabled or hum.Health <= 0 then
-                return
-            end
+            if not CFG.Enabled or hum.Health <= 0 then return end
 
-            -- chờ thêm thời gian cho perfect + launch xảy ra
+            -- Thoát trạng thái chờ → bắn thêm 1 lần
+            setStatus("Thoát chờ đá — perfect lần 2")
+            simulateCenterClick()
+
             task.wait(CFG.PerfectDelay + 0.8)
 
             if (root.Position - startPosition).Magnitude <= CFG.LaunchDistance then
