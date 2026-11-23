@@ -195,7 +195,7 @@ local function simulateCenterClick()
 
     -- Vị trí góc dưới bên phải
     local cx = math.floor(viewport.X * 0.32)
-local cy = math.floor(viewport.Y * 0.78))
+local cy = math.floor(viewport.Y * 0.78)
 
     -- Cách 1: VirtualInputManager
     local ok = pcall(function()
