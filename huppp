@@ -1,7 +1,9 @@
--- Auto Kick + Safe Run + Auto Collect (hardened click)
+-- Auto Kick + Safe Run + Auto Collect
 -- Executor: getgenv / getconnections / firesignal / VirtualInputManager
 -- Target: workspace.Areas.KickReady
--- Patch: force perfect khi kẹt chờ > 2s, bắn thêm 1 lần sau khi thoát chờ, click lệch trái + retry
+-- Perfect click lệch trái (theo nút xanh trong game)
+-- Force perfect nếu kẹt chờ đá > 2s
+-- Bắn thêm 1 lần perfect sau khi thoát trạng thái chờ
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -36,15 +38,24 @@ local CFG = {
 
     PerfectDelay = 0.45,
     PerfectClickHold = 0.06,
-    WaitKickForceTime = 2,       -- force perfect nếu kẹt chờ đá > 2s
-    ClickRetry = 3,              -- số lần thử mỗi lần gọi simulate
+    WaitKickForceTime = 2,
+    ClickRetry = 3,
     ClickRetryGap = 0.08,
 }
 
 local RARITIES = {
-    Common = true, Rare = true, Epic = true, Legendary = true,
-    Mythic = true, Godly = true, Secret = true, Divine = true,
-    Hacked = true, OG = true, Celestial = true, Eternal = true,
+    Common = true,
+    Rare = true,
+    Epic = true,
+    Legendary = true,
+    Mythic = true,
+    Godly = true,
+    Secret = true,
+    Divine = true,
+    Hacked = true,
+    OG = true,
+    Celestial = true,
+    Eternal = true,
 }
 
 -- ================= GUI =================
@@ -155,7 +166,7 @@ local function forceTP(root, targetCF)
     return ok
 end
 
--- ================= PERFECT CLICK (hardened) =================
+-- ================= PERFECT CLICK (lệch trái) =================
 
 local function sendVIMClick(cx, cy)
     local ok = pcall(function()
@@ -210,7 +221,7 @@ local function simulateCenterClick()
     local viewport = camera.ViewportSize
     if viewport.X < 10 or viewport.Y < 10 then return false end
 
-    -- 2 vị trí: lệch trái + gần giữa dưới
+    -- Vị trí lệch trái (nút xanh trong ảnh)
     local positions = {
         {math.floor(viewport.X * 0.32), math.floor(viewport.Y * 0.78)},
         {math.floor(viewport.X * 0.28), math.floor(viewport.Y * 0.76)},
@@ -218,20 +229,17 @@ local function simulateCenterClick()
     }
 
     for attempt = 1, CFG.ClickRetry do
-        -- 1. VirtualInputManager trên nhiều vị trí
         for _, pos in ipairs(positions) do
             if sendVIMClick(pos[1], pos[2]) then
                 return true
             end
         end
 
-        -- 2. mouse1click nếu executor hỗ trợ
         if mouse1click then
             local ok = pcall(mouse1click)
             if ok then return true end
         end
 
-        -- 3. Fire GUI button text match
         if tryGUIButtonFire() then
             return true
         end
@@ -439,7 +447,6 @@ task.spawn(function()
                     break
                 end
 
-                -- Force perfect nếu kẹt chờ > 2s
                 if not forcedPerfect and (os.clock() - waitKickStart) >= CFG.WaitKickForceTime then
                     setStatus("Chờ quá lâu — force perfect")
                     simulateCenterClick()
@@ -457,7 +464,6 @@ task.spawn(function()
 
             if not CFG.Enabled or hum.Health <= 0 then return end
 
-            -- Thoát trạng thái chờ → bắn thêm 1 lần
             setStatus("Thoát chờ đá — perfect lần 2")
             simulateCenterClick()
 
@@ -480,23 +486,21 @@ task.spawn(function()
     end
 end)
 
+-- ================= ANTI-AFK =================
 loadstring(game:HttpGet("https://raw.githubusercontent.com/evxncodes/mainroblox/main/anti-afk", true))()
 
-
--- language: Lua, Kick a Lucky Block — Thanksgiving auto pick
+-- ================= THANKSGIVING AUTO PICK =================
 -- nghe Spill → tự FireServer toàn bộ Id
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Network = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Packages"):WaitForChild("Network")
 
 local spill = Network:WaitForChild("rev_tgSpill")
 local pick  = Network:WaitForChild("rev_tgPick")
 
 local currentRun = nil
-local pending = {}          -- [Id] = Kind
-local AUTO = true           -- tắt/bật nhanh
+local pending = {}
+local AUTO = true
 
--- nhận list item mới từ server
 spill.OnClientEvent:Connect(function(data)
     if typeof(data) ~= "table" or not data.RunId or not data.Items then return end
 
@@ -507,19 +511,15 @@ spill.OnClientEvent:Connect(function(data)
         if item.Id and item.Kind then
             pending[item.Id] = item.Kind
             if AUTO then
-                -- fire ngay lập tức
                 pcall(function()
                     pick:FireServer(currentRun, item.Id)
                 end)
-                if true then -- debug
-                    print("[AutoPick]", item.Kind, "Id =", item.Id, "Run =", currentRun)
-                end
+                print("[AutoPick]", item.Kind, "Id =", item.Id, "Run =", currentRun)
             end
         end
     end
 end)
 
--- backup: spam lại các Id còn pending mỗi 0.4s (phòng packet trễ)
 task.spawn(function()
     while true do
         task.wait(0.4)
@@ -533,7 +533,6 @@ task.spawn(function()
     end
 end)
 
--- optional: clear pending khi nhận confirm harvest
 local harvest = Network:FindFirstChild("rev_tgHarvest")
 if harvest then
     harvest.OnClientEvent:Connect(function(data)
