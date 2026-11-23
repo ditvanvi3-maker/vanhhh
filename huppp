@@ -1,10 +1,7 @@
 -- Auto Kick + Safe Run + Auto Collect
 -- Dành cho môi trường executor hỗ trợ getgenv/getconnections/firesignal/VirtualInputManager.
 -- Lưu ý: vị trí đích lấy theo file FARTEZ: workspace.Areas.KickReady.
--- Sau khi auto click KickButton → chờ PerfectDelay → giả lập nhấn (perfect).
--- Patch: nếu kẹt ở "Đang chờ cú đá" > 2s → force perfect click.
--- Sau khi thoát trạng thái chờ đá → bắn thêm 1 lần perfect click.
--- Vị trí click lệch trái hơn.
+-- Sau khi auto click KickButton → chờ 1s → giả lập nhấn giữa màn hình (perfect).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -40,9 +37,6 @@ local CFG = {
     -- Perfect timing
     PerfectDelay = 0.45,          -- giây sau khi click KickButton
     PerfectClickHold = 0.06,     -- thời gian giữ chuột
-
-    -- Force perfect khi kẹt chờ đá
-    WaitKickForceTime = 2,       -- giây
 }
 
 -- Các rarity có trong bảng mapping của FARTEZ.
@@ -107,28 +101,18 @@ local function setStatus(msg)
     status.Text = "Trạng thái: " .. msg
 end
 
-local function updateToggle()
-    if CFG.Enabled then
-        toggle.Text = "AUTO FARM: ON"
-        toggle.BackgroundColor3 =
-            Color3.fromRGB(40, 150, 65)
-        setStatus("Đã tự động bật")
-    else
-        toggle.Text = "AUTO FARM: OFF"
-        toggle.BackgroundColor3 =
-            Color3.fromRGB(160, 45, 45)
-        setStatus("Đã tắt")
-    end
-end
-
--- Tự bật ngay khi chạy
-CFG.Enabled = true
-updateToggle()
-
--- Nút ON/OFF
 toggle.Activated:Connect(function()
     CFG.Enabled = not CFG.Enabled
-    updateToggle()
+
+    if CFG.Enabled then
+        toggle.Text = "AUTO FARM: ON"
+        toggle.BackgroundColor3 = Color3.fromRGB(40, 150, 65)
+        setStatus("Đã bật")
+    else
+        toggle.Text = "AUTO FARM: OFF"
+        toggle.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
+        setStatus("Đã tắt")
+    end
 end)
 
 -- ================= HELPERS =================
@@ -190,90 +174,53 @@ local function forceTP(root, targetCF)
     return ok
 end
 
--- ================= PERFECT CLICK (lệch trái) =================
+-- ================= PERFECT CLICK (giữa màn hình) =================
 
 local function simulateCenterClick()
     local camera = workspace.CurrentCamera
     if not camera then return false end
 
     local viewport = camera.ViewportSize
+    local cx = viewport.X / 2
+    local cy = viewport.Y / 2
 
-    -- Lệch trái hơn (trước đây 0.92 / 0.90)
-    local cx = math.floor(viewport.X * 0.85)
-    local cy = math.floor(viewport.Y * 0.90)
-
-    -- Cách 1: VirtualInputManager
+    -- Cách 1: VirtualInputManager (ổn định nhất)
     local ok = pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(
-            cx, cy, 0, true, game, 1
-        )
-
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
         task.wait(CFG.PerfectClickHold)
-
-        VirtualInputManager:SendMouseButtonEvent(
-            cx, cy, 0, false, game, 1
-        )
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
     end)
 
-    if ok then
+    if ok then return true end
+
+    -- Cách 2: mouse1click (một số executor)
+    if mouse1click then
+        pcall(function()
+            mouse1click()
+        end)
         return true
     end
 
-    -- Cách 2: mouse1click
-    if mouse1click then
-        local success = pcall(function()
-            mouse1click()
-        end)
-
-        if success then
-            return true
-        end
-    end
-
-    -- Cách 3: Tìm nút GUI liên quan đến đá bóng
+    -- Cách 3: fire GUI "Nhấn để đá!" nếu tìm thấy
     for _, obj in ipairs(PlayerGui:GetDescendants()) do
-        if obj:IsA("GuiButton") then
-            local text = ""
-
-            pcall(function()
-                text = obj.Text or ""
-
-                local label = obj:FindFirstChildOfClass("TextLabel")
-                if label then
-                    text = text .. " " .. label.Text
-                end
-            end)
-
-            text = string.lower(text)
-
-            if string.find(text, "nhấn")
-                or string.find(text, "đá") then
-
+        if obj:IsA("GuiButton") or obj:IsA("TextButton") or obj:IsA("ImageButton") then
+            local text = (obj:FindFirstChildOfClass("TextLabel") and obj:FindFirstChildOfClass("TextLabel").Text)
+                or obj.Text
+                or ""
+            if string.find(string.lower(text), "nhấn") or string.find(string.lower(text), "đá") then
                 if getconnections then
-                    for _, sig in ipairs({
-                        "MouseButton1Click",
-                        "Activated"
-                    }) do
-                        local signalOk, connections = pcall(function()
-                            return getconnections(obj[sig])
-                        end)
-
-                        if signalOk and connections then
-                            for _, connection in ipairs(connections) do
-                                pcall(function()
-                                    connection:Fire()
-                                end)
+                    for _, sig in ipairs({"MouseButton1Click", "Activated"}) do
+                        local conns = pcall(function() return getconnections(obj[sig]) end)
+                        if conns then
+                            for _, c in ipairs(conns) do
+                                pcall(function() c:Fire() end)
                             end
                         end
                     end
                 end
-
                 if firesignal then
-                    pcall(function()
-                        firesignal(obj.Activated)
-                    end)
+                    pcall(function() firesignal(obj.Activated) end)
                 end
-
                 return true
             end
         end
@@ -324,7 +271,7 @@ local function activateKick()
         activated = ok
     end
 
-    -- Sau khi kick thành công → chờ PerfectDelay rồi nhấn
+    -- Sau khi kick thành công → chờ PerfectDelay rồi nhấn giữa màn hình
     if activated then
         task.spawn(function()
             task.wait(CFG.PerfectDelay)
@@ -500,8 +447,6 @@ task.spawn(function()
 
             local startPosition = root.Position
             local deadline = os.clock() + CFG.LaunchTimeout
-            local waitKickStart = os.clock()
-            local forcedPerfect = false
 
             setStatus("Đang chờ cú đá")
 
@@ -512,14 +457,6 @@ task.spawn(function()
                     activateKick()
                     -- chỉ fire 1 lần rồi chờ perfect + launch
                     break
-                end
-
-                -- Force perfect nếu kẹt chờ > 2s
-                if not forcedPerfect and (os.clock() - waitKickStart) >= CFG.WaitKickForceTime then
-                    setStatus("Chờ quá lâu — force perfect")
-                    simulateCenterClick()
-                    forcedPerfect = true
-                    waitKickStart = os.clock() -- reset để tránh spam
                 end
 
                 if not root.Parent then return end
@@ -534,10 +471,6 @@ task.spawn(function()
             if not CFG.Enabled or hum.Health <= 0 then
                 return
             end
-
-            -- Sau khi thoát trạng thái chờ đá → bắn thêm 1 lần perfect
-            setStatus("Thoát chờ đá — perfect lần 2")
-            simulateCenterClick()
 
             -- chờ thêm thời gian cho perfect + launch xảy ra
             task.wait(CFG.PerfectDelay + 0.8)
