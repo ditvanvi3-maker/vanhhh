@@ -1,7 +1,7 @@
+-- language: Luau, file: AutoKickSafeRun.lua
 -- Auto Kick + Safe Run + Auto Collect
--- Dành cho môi trường executor hỗ trợ getgenv/getconnections/firesignal/VirtualInputManager.
--- Lưu ý: vị trí đích lấy theo file FARTEZ: workspace.Areas.KickReady.
--- Sau khi auto click KickButton → chờ 1s → giả lập nhấn giữa màn hình (perfect).
+-- Executor cần: getgenv / getconnections / firesignal / VirtualInputManager / firetouchinterest
+-- Target: workspace.Areas.KickReady
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23,7 +23,6 @@ local KickRemote = Net and Net:FindFirstChild("rev_KickEvent")
 local CollectRemote = Net and Net:FindFirstChild("rev_CollectShard")
 
 -- ================= CONFIG =================
-
 local CFG = {
     Enabled = false,
     KickCooldown = 1,
@@ -34,12 +33,13 @@ local CFG = {
     StuckTimeout = 3,
     ScanDelay = 0.1,
 
-    -- Perfect timing
-    PerfectDelay = 0.45,          -- giây sau khi click KickButton
-    PerfectClickHold = 0.06,     -- thời gian giữ chuột
+    -- Perfect timing (ổn định)
+    PerfectDelay = 0.25,      -- base delay trước khi bắt đầu poll
+    PerfectWindow = 1.2,      -- thời gian tối đa tìm + click perfect
+    PerfectClickHold = 0.05,
+    PerfectRetries = 3,
 }
 
--- Các rarity có trong bảng mapping của FARTEZ.
 local RARITIES = {
     Common = true,
     Rare = true,
@@ -56,7 +56,6 @@ local RARITIES = {
 }
 
 -- ================= GUI =================
-
 pcall(function()
     local old = CoreGui:FindFirstChild("AutoKickSafeRun")
     if old then old:Destroy() end
@@ -104,29 +103,24 @@ end
 local function updateToggle()
     if CFG.Enabled then
         toggle.Text = "AUTO FARM: ON"
-        toggle.BackgroundColor3 =
-            Color3.fromRGB(40, 150, 65)
+        toggle.BackgroundColor3 = Color3.fromRGB(40, 150, 65)
         setStatus("Đã tự động bật")
     else
         toggle.Text = "AUTO FARM: OFF"
-        toggle.BackgroundColor3 =
-            Color3.fromRGB(160, 45, 45)
+        toggle.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
         setStatus("Đã tắt")
     end
 end
 
--- Tự bật ngay khi chạy
 CFG.Enabled = true
 updateToggle()
 
--- Nút ON/OFF
 toggle.Activated:Connect(function()
     CFG.Enabled = not CFG.Enabled
     updateToggle()
 end)
 
 -- ================= HELPERS =================
-
 local function getCharacter()
     local char = player.Character
     if not char then return end
@@ -184,107 +178,113 @@ local function forceTP(root, targetCF)
     return ok
 end
 
--- ================= PERFECT CLICK (giữa màn hình) =================
+-- ================= PERFECT CLICK (ổn định) =================
+local function getViewportCenter()
+    local cam = workspace.CurrentCamera
+    if not cam then return 400, 300 end
+    local vs = cam.ViewportSize
+    return math.floor(vs.X * 0.5), math.floor(vs.Y * 0.5)
+end
 
+local function fireButton(btn)
+    if not btn or not btn:IsA("GuiButton") then return false end
 
-local function simulateCenterClick()
-    local camera = workspace.CurrentCamera
-    if not camera then return false end
+    local fired = false
 
-    local viewport = camera.ViewportSize
-
-    -- Vị trí góc dưới bên phải
-    local cx = math.floor(viewport.X * 0.32)
-local cy = math.floor(viewport.Y * 0.78)
-
-    -- Cách 1: VirtualInputManager
-    local ok = pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(
-            cx, cy, 0, true, game, 1
-        )
-
-        task.wait(CFG.PerfectClickHold)
-
-        VirtualInputManager:SendMouseButtonEvent(
-            cx, cy, 0, false, game, 1
-        )
-    end)
-
-    if ok then
-        return true
-    end
-
-    -- Cách 2: mouse1click
-    if mouse1click then
-        local success = pcall(function()
-            mouse1click()
-        end)
-
-        if success then
-            return true
-        end
-    end
-
-    -- Cách 3: Tìm nút GUI liên quan đến đá bóng
-    for _, obj in ipairs(PlayerGui:GetDescendants()) do
-
-        if obj:IsA("GuiButton") then
-
-            local text = ""
-
-            pcall(function()
-                text = obj.Text or ""
-
-                local label = obj:FindFirstChildOfClass("TextLabel")
-                if label then
-                    text = text .. " " .. label.Text
-                end
+    if getconnections then
+        for _, sig in ipairs({"MouseButton1Click", "Activated", "MouseButton1Down"}) do
+            local ok, conns = pcall(function()
+                return getconnections(btn[sig])
             end)
-
-            text = string.lower(text)
-
-            if string.find(text, "nhấn")
-                or string.find(text, "đá") then
-
-                if getconnections then
-                    for _, sig in ipairs({
-                        "MouseButton1Click",
-                        "Activated"
-                    }) do
-
-                        local signalOk, connections = pcall(function()
-                            return getconnections(obj[sig])
-                        end)
-
-                        if signalOk and connections then
-                            for _, connection in ipairs(connections) do
-                                pcall(function()
-                                    connection:Fire()
-                                end)
-                            end
-                        end
-                    end
-                end
-
-                if firesignal then
+            if ok and conns then
+                for _, c in ipairs(conns) do
                     pcall(function()
-                        firesignal(obj.Activated)
+                        c:Fire()
+                        fired = true
                     end)
                 end
-
-                return true
             end
         end
     end
 
+    if firesignal then
+        pcall(function()
+            firesignal(btn.Activated)
+            fired = true
+        end)
+    end
+
+    local cx, cy = getViewportCenter()
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+        task.wait(CFG.PerfectClickHold)
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+        fired = true
+    end)
+
+    return fired
+end
+
+local function findPerfectButton()
+    local keywords = {"perfect", "nhấn", "đá", "timing", "click", "tap"}
+
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if obj:IsA("GuiButton") and obj.Visible then
+            local text = ""
+            pcall(function()
+                text = (obj.Text or "") .. " "
+                local label = obj:FindFirstChildOfClass("TextLabel")
+                if label then
+                    text = text .. (label.Text or "")
+                end
+            end)
+            text = string.lower(text)
+
+            for _, kw in ipairs(keywords) do
+                if string.find(text, kw) then
+                    return obj
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function simulatePerfect()
+    local deadline = os.clock() + CFG.PerfectWindow
+    local attempts = 0
+
+    while os.clock() < deadline and attempts < CFG.PerfectRetries and CFG.Enabled do
+        attempts += 1
+        setStatus("Đang tìm perfect... #" .. attempts)
+
+        local btn = findPerfectButton()
+        if btn then
+            setStatus("Tìm thấy perfect — đang fire")
+            if fireButton(btn) then
+                setStatus("Perfect đã gửi")
+                return true
+            end
+        end
+
+        -- fallback center click
+        local cx, cy = getViewportCenter()
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+            task.wait(CFG.PerfectClickHold)
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+        end)
+
+        task.wait(0.12)
+    end
+
+    setStatus("Perfect timeout")
     return false
 end
 
 -- ================= KICK =================
-
 local function activateKick()
     local button = findKickButton()
-
     if not button or not button.Visible then
         return false
     end
@@ -296,7 +296,6 @@ local function activateKick()
             local ok, connections = pcall(function()
                 return getconnections(button[signalName])
             end)
-
             if ok and connections then
                 for _, connection in ipairs(connections) do
                     pcall(function()
@@ -322,18 +321,11 @@ local function activateKick()
         activated = ok
     end
 
-    -- Sau khi kick thành công → chờ PerfectDelay rồi nhấn giữa màn hình
     if activated then
         task.spawn(function()
             task.wait(CFG.PerfectDelay)
             if CFG.Enabled then
-                setStatus("Đang nhấn perfect...")
-                local success = simulateCenterClick()
-                if success then
-                    setStatus("Perfect đã gửi")
-                else
-                    setStatus("Không gửi được perfect click")
-                end
+                simulatePerfect()
             end
         end)
     end
@@ -342,12 +334,10 @@ local function activateKick()
 end
 
 -- ================= COLLECT =================
-
 local function getHitbox(obj)
     if obj:IsA("BasePart") then
         return obj
     end
-
     return obj:FindFirstChild("RootPart", true)
         or obj:FindFirstChild("Hitbox", true)
         or obj:FindFirstChildWhichIsA("BasePart", true)
@@ -368,20 +358,13 @@ local function collectNearby(root, safePosition)
 
     for _, obj in ipairs(debris:GetChildren()) do
         if not CFG.Enabled then return end
-
-        if not RARITIES[obj.Name] then
-            continue
-        end
+        if not RARITIES[obj.Name] then continue end
 
         local hitbox = getHitbox(obj)
-        if not hitbox or not hitbox:IsA("BasePart") then
-            continue
-        end
+        if not hitbox or not hitbox:IsA("BasePart") then continue end
 
         local distance = (root.Position - hitbox.Position).Magnitude
-        if distance > CFG.CollectRadius then
-            continue
-        end
+        if distance > CFG.CollectRadius then continue end
 
         local flatObject = Vector3.new(hitbox.Position.X, 0, hitbox.Position.Z)
         local toObject = flatObject - flatCurrent
@@ -408,7 +391,6 @@ local function collectNearby(root, safePosition)
 end
 
 -- ================= WALK BACK =================
-
 local function walkBack(root, hum, safePosition, targetCF)
     local lastPosition = root.Position
     local stuckTime = 0
@@ -425,7 +407,6 @@ local function walkBack(root, hum, safePosition, targetCF)
 
         pcall(function()
             local state = hum:GetState()
-
             if hum.Sit
                 or hum.PlatformStand
                 or state == Enum.HumanoidStateType.Ragdoll
@@ -453,7 +434,7 @@ local function walkBack(root, hum, safePosition, targetCF)
         end
 
         if stuckTime >= CFG.StuckTimeout then
-            setStatus("Bị kẹt — thử quay về KickReady")
+            setStatus("Bị kẹt — TP về KickReady")
             forceTP(root, targetCF + Vector3.new(0, 3, 0))
             return false
         end
@@ -465,7 +446,6 @@ local function walkBack(root, hum, safePosition, targetCF)
 end
 
 -- ================= MAIN LOOP =================
-
 task.spawn(function()
     while gui.Parent do
         if not CFG.Enabled then
@@ -506,7 +486,6 @@ task.spawn(function()
 
                 if button and button.Visible then
                     activateKick()
-                    -- chỉ fire 1 lần rồi chờ perfect + launch
                     break
                 end
 
@@ -523,11 +502,10 @@ task.spawn(function()
                 return
             end
 
-            -- chờ thêm thời gian cho perfect + launch xảy ra
             task.wait(CFG.PerfectDelay + 0.8)
 
             if (root.Position - startPosition).Magnitude <= CFG.LaunchDistance then
-                setStatus("Chưa phát hiện nhân vật được phóng đi")
+                setStatus("Chưa phát hiện phóng đi")
                 return
             end
 
@@ -542,69 +520,3 @@ task.spawn(function()
         task.wait(CFG.KickCooldown)
     end
 end)
-
-loadstring(game:HttpGet("https://raw.githubusercontent.com/evxncodes/mainroblox/main/anti-afk", true))()
-
-
--- language: Lua, Kick a Lucky Block — Thanksgiving auto pick
--- nghe Spill → tự FireServer toàn bộ Id
-
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Network = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Packages"):WaitForChild("Network")
-
-local spill = Network:WaitForChild("rev_tgSpill")
-local pick  = Network:WaitForChild("rev_tgPick")
-
-local currentRun = nil
-local pending = {}          -- [Id] = Kind
-local AUTO = true           -- tắt/bật nhanh
-
--- nhận list item mới từ server
-spill.OnClientEvent:Connect(function(data)
-    if typeof(data) ~= "table" or not data.RunId or not data.Items then return end
-
-    currentRun = data.RunId
-    pending = {}
-
-    for _, item in ipairs(data.Items) do
-        if item.Id and item.Kind then
-            pending[item.Id] = item.Kind
-            if AUTO then
-                -- fire ngay lập tức
-                pcall(function()
-                    pick:FireServer(currentRun, item.Id)
-                end)
-                if true then -- debug
-                    print("[AutoPick]", item.Kind, "Id =", item.Id, "Run =", currentRun)
-                end
-            end
-        end
-    end
-end)
-
--- backup: spam lại các Id còn pending mỗi 0.4s (phòng packet trễ)
-task.spawn(function()
-    while true do
-        task.wait(0.4)
-        if AUTO and currentRun and next(pending) then
-            for id, kind in pairs(pending) do
-                pcall(function()
-                    pick:FireServer(currentRun, id)
-                end)
-            end
-        end
-    end
-end)
-
--- optional: clear pending khi nhận confirm harvest
-local harvest = Network:FindFirstChild("rev_tgHarvest")
-if harvest then
-    harvest.OnClientEvent:Connect(function(data)
-        if typeof(data) == "table" and data.Id then
-            pending[data.Id] = nil
-            print("[Harvested]", data.Kind or "?", "Id =", data.Id)
-        end
-    end)
-end
-
-print("[JBtoAI] AutoPick ready — sẽ tự nhặt mọi nguyên liệu khi Spill")
