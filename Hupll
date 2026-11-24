@@ -1,0 +1,610 @@
+-- Auto Kick + Safe Run + Auto Collect
+-- + Timeout 15s sau khi KickButton → Click Hủy + Restart Script
+-- Executor cần: getgenv / getconnections / firesignal / VirtualInputManager / firetouchinterest
+-- Target: workspace.Areas.KickReady
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local PlayerGui = player:WaitForChild("PlayerGui")
+
+local function getNetwork()
+    local shared = ReplicatedStorage:FindFirstChild("Shared")
+    local packages = shared and shared:FindFirstChild("Packages")
+    return packages and packages:FindFirstChild("Network")
+end
+
+local Net = getNetwork()
+local KickRemote = Net and Net:FindFirstChild("rev_KickEvent")
+local CollectRemote = Net and Net:FindFirstChild("rev_CollectShard")
+
+-- ================= CONFIG =================
+local CFG = {
+    Enabled = false,
+    KickCooldown = 1,
+    LaunchDistance = 40,
+    LaunchTimeout = 15,
+    CollectRadius = 60,
+    SafeRadius = 6,
+    StuckTimeout = 3,
+    ScanDelay = 0.1,
+
+    -- Perfect timing
+    PerfectDelay = 0.45,
+    PerfectWindow = 1.2,
+    PerfectClickHold = 0.05,
+    PerfectRetries = 3,
+
+    -- Timeout sau khi KickButton được kích hoạt
+    AfterKickTimeout = 15,
+}
+
+local RARITIES = {
+    Common = true,
+    Rare = true,
+    Epic = true,
+    Legendary = true,
+    Mythic = true,
+    Godly = true,
+    Secret = true,
+    Divine = true,
+    Hacked = true,
+    OG = true,
+    Celestial = true,
+    Eternal = true,
+}
+
+-- ================= GUI =================
+pcall(function()
+    local old = CoreGui:FindFirstChild("AutoKickSafeRun")
+    if old then old:Destroy() end
+end)
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "AutoKickSafeRun"
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(300, 110)
+frame.Position = UDim2.new(0.08, 0, 0.35, 0)
+frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+local toggle = Instance.new("TextButton")
+toggle.Size = UDim2.new(1, -16, 0, 42)
+toggle.Position = UDim2.fromOffset(8, 8)
+toggle.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
+toggle.TextColor3 = Color3.new(1, 1, 1)
+toggle.Font = Enum.Font.GothamBold
+toggle.TextSize = 15
+toggle.Text = "AUTO FARM: OFF"
+toggle.Parent = frame
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -16, 0, 42)
+status.Position = UDim2.fromOffset(8, 56)
+status.BackgroundTransparency = 1
+status.TextColor3 = Color3.new(1, 1, 1)
+status.Font = Enum.Font.Gotham
+status.TextSize = 13
+status.TextWrapped = true
+status.Text = "Trạng thái: Đang chờ"
+status.Parent = frame
+
+local function setStatus(msg)
+    status.Text = "Trạng thái: " .. msg
+end
+
+local function updateToggle()
+    if CFG.Enabled then
+        toggle.Text = "AUTO FARM: ON"
+        toggle.BackgroundColor3 = Color3.fromRGB(40, 150, 65)
+        setStatus("Đã tự động bật")
+    else
+        toggle.Text = "AUTO FARM: OFF"
+        toggle.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
+        setStatus("Đã tắt")
+    end
+end
+
+CFG.Enabled = true
+updateToggle()
+
+toggle.Activated:Connect(function()
+    CFG.Enabled = not CFG.Enabled
+    updateToggle()
+end)
+
+-- ================= HELPERS =================
+local function getCharacter()
+    local char = player.Character
+    if not char then return end
+
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    if not root or not hum or hum.Health <= 0 then
+        return
+    end
+
+    return char, root, hum
+end
+
+local function getKickTarget()
+    local areas = workspace:FindFirstChild("Areas")
+    local target = areas and areas:FindFirstChild("KickReady")
+    if not target then return nil end
+
+    if target:IsA("BasePart") then
+        return target.CFrame
+    elseif target:IsA("Model") then
+        return target:GetPivot()
+    end
+
+    return nil
+end
+
+local function findKickButton()
+    local hud = PlayerGui:FindFirstChild("HUD")
+    local btn = hud and hud:FindFirstChild("KickButton", true)
+
+    if btn and btn:IsA("GuiButton") then
+        return btn
+    end
+
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if obj.Name == "KickButton" and obj:IsA("GuiButton") then
+            return obj
+        end
+    end
+
+    return nil
+end
+
+local function findCancelButton()
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if obj:IsA("GuiButton") and obj.Visible then
+            local nameLower = string.lower(obj.Name)
+            local text = ""
+            pcall(function()
+                text = string.lower(obj.Text or "")
+                local label = obj:FindFirstChildOfClass("TextLabel")
+                if label then
+                    text = text .. " " .. string.lower(label.Text or "")
+                end
+            end)
+
+            if nameLower:find("cancel") or nameLower:find("huy")
+                or text:find("hủy") or text:find("huy") or text:find("cancel") then
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
+local function forceTP(root, targetCF)
+    if not root or not root.Parent then return false end
+
+    local ok = pcall(function()
+        root.CFrame = targetCF
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end)
+
+    return ok
+end
+
+local function getViewportCenter()
+    local cam = workspace.CurrentCamera
+    if not cam then return 400, 300 end
+    local vs = cam.ViewportSize
+    return math.floor(vs.X * 0.5), math.floor(vs.Y * 0.5)
+end
+
+-- ================= RESTART =================
+local function restartScript()
+    setStatus("Timeout 15s → Click Hủy + Restart")
+
+    local cancelBtn = findCancelButton()
+    if cancelBtn then
+        if getconnections then
+            for _, sig in ipairs({"MouseButton1Click", "Activated", "MouseButton1Down"}) do
+                local ok, conns = pcall(function()
+                    return getconnections(cancelBtn[sig])
+                end)
+                if ok and conns then
+                    for _, c in ipairs(conns) do
+                        pcall(function() c:Fire() end)
+                    end
+                end
+            end
+        end
+        if firesignal then
+            pcall(function() firesignal(cancelBtn.Activated) end)
+        end
+
+        -- Fallback click
+        local cx, cy = getViewportCenter()
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+            task.wait(0.04)
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+        end)
+    end
+
+    -- Tắt → chờ → bật lại
+    CFG.Enabled = false
+    updateToggle()
+    task.wait(1.3)
+    CFG.Enabled = true
+    updateToggle()
+    setStatus("Đã restart script")
+end
+
+-- ================= PERFECT CLICK =================
+local function fireButton(btn)
+    if not btn or not btn:IsA("GuiButton") then return false end
+
+    local fired = false
+
+    if getconnections then
+        for _, sig in ipairs({"MouseButton1Click", "Activated", "MouseButton1Down"}) do
+            local ok, conns = pcall(function()
+                return getconnections(btn[sig])
+            end)
+            if ok and conns then
+                for _, c in ipairs(conns) do
+                    pcall(function()
+                        c:Fire()
+                        fired = true
+                    end)
+                end
+            end
+        end
+    end
+
+    if firesignal then
+        pcall(function()
+            firesignal(btn.Activated)
+            fired = true
+        end)
+    end
+
+    local cx, cy = getViewportCenter()
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+        task.wait(CFG.PerfectClickHold)
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+        fired = true
+    end)
+
+    return fired
+end
+
+local function findPerfectButton()
+    local keywords = {"perfect", "nhấn", "đá", "timing", "click", "tap"}
+
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if obj:IsA("GuiButton") and obj.Visible then
+            local text = ""
+            pcall(function()
+                text = (obj.Text or "") .. " "
+                local label = obj:FindFirstChildOfClass("TextLabel")
+                if label then
+                    text = text .. (label.Text or "")
+                end
+            end)
+            text = string.lower(text)
+
+            for _, kw in ipairs(keywords) do
+                if string.find(text, kw) then
+                    return obj
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function simulatePerfect()
+    local deadline = os.clock() + CFG.PerfectWindow
+    local attempts = 0
+
+    while os.clock() < deadline and attempts < CFG.PerfectRetries and CFG.Enabled do
+        attempts += 1
+        setStatus("Đang tìm perfect... #" .. attempts)
+
+        local btn = findPerfectButton()
+        if btn then
+            setStatus("Tìm thấy perfect — đang fire")
+            if fireButton(btn) then
+                setStatus("Perfect đã gửi")
+                return true
+            end
+        end
+
+        -- fallback center click
+        local cx, cy = getViewportCenter()
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+            task.wait(CFG.PerfectClickHold)
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+        end)
+
+        task.wait(0.12)
+    end
+
+    setStatus("Perfect timeout")
+    return false
+end
+
+-- ================= KICK =================
+local function activateKick()
+    local button = findKickButton()
+    if not button or not button.Visible then
+        return false
+    end
+
+    local activated = false
+
+    if getconnections then
+        for _, signalName in ipairs({"MouseButton1Click", "Activated"}) do
+            local ok, connections = pcall(function()
+                return getconnections(button[signalName])
+            end)
+            if ok and connections then
+                for _, connection in ipairs(connections) do
+                    pcall(function()
+                        connection:Fire()
+                        activated = true
+                    end)
+                end
+            end
+        end
+    end
+
+    if not activated and firesignal then
+        local ok = pcall(function()
+            firesignal(button.Activated)
+        end)
+        activated = ok
+    end
+
+    if not activated and KickRemote and KickRemote:IsA("RemoteEvent") then
+        local ok = pcall(function()
+            KickRemote:FireServer(1)
+        end)
+        activated = ok
+    end
+
+    if activated then
+        task.spawn(function()
+            task.wait(CFG.PerfectDelay)
+            if CFG.Enabled then
+                simulatePerfect()
+            end
+        end)
+    end
+
+    return activated
+end
+
+-- ================= COLLECT =================
+local function getHitbox(obj)
+    if obj:IsA("BasePart") then
+        return obj
+    end
+    return obj:FindFirstChild("RootPart", true)
+        or obj:FindFirstChild("Hitbox", true)
+        or obj:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function collectNearby(root, safePosition)
+    local debris = workspace:FindFirstChild("Debris")
+    if not debris or not CollectRemote then return end
+
+    local current = root.Position
+    local flatCurrent = Vector3.new(current.X, 0, current.Z)
+    local flatSafe = Vector3.new(safePosition.X, 0, safePosition.Z)
+
+    local safeVector = flatSafe - flatCurrent
+    if safeVector.Magnitude < 0.01 then return end
+
+    local safeDirection = safeVector.Unit
+
+    for _, obj in ipairs(debris:GetChildren()) do
+        if not CFG.Enabled then return end
+        if not RARITIES[obj.Name] then continue end
+
+        local hitbox = getHitbox(obj)
+        if not hitbox or not hitbox:IsA("BasePart") then continue end
+
+        local distance = (root.Position - hitbox.Position).Magnitude
+        if distance > CFG.CollectRadius then continue end
+
+        local flatObject = Vector3.new(hitbox.Position.X, 0, hitbox.Position.Z)
+        local toObject = flatObject - flatCurrent
+        if toObject.Magnitude < 0.01 then
+            toObject = safeDirection
+        end
+
+        if safeDirection:Dot(toObject.Unit) >= -0.2 then
+            if firetouchinterest then
+                task.spawn(function()
+                    pcall(function()
+                        firetouchinterest(root, hitbox, 0)
+                        task.wait(0.05)
+                        firetouchinterest(root, hitbox, 1)
+                    end)
+                end)
+            end
+
+            pcall(function()
+                CollectRemote:FireServer(obj.Name)
+            end)
+        end
+    end
+end
+
+-- ================= WALK BACK =================
+local function walkBack(root, hum, safePosition, targetCF)
+    local lastPosition = root.Position
+    local stuckTime = 0
+
+    setStatus("Đang thu thập và đi bộ về KickReady")
+
+    while CFG.Enabled and hum.Health > 0 and root.Parent do
+        local distance = (root.Position - safePosition).Magnitude
+
+        if distance <= CFG.SafeRadius then
+            setStatus("Đã về KickReady")
+            return true
+        end
+
+        pcall(function()
+            local state = hum:GetState()
+            if hum.Sit
+                or hum.PlatformStand
+                or state == Enum.HumanoidStateType.Ragdoll
+                or state == Enum.HumanoidStateType.FallingDown then
+                hum.Sit = false
+                hum.PlatformStand = false
+                hum:ChangeState(Enum.HumanoidStateType.Running)
+                hum.Jump = true
+            end
+        end)
+
+        collectNearby(root, safePosition)
+
+        pcall(function()
+            if not hum.Sit and hum:GetState() ~= Enum.HumanoidStateType.Ragdoll then
+                hum:MoveTo(safePosition)
+            end
+        end)
+
+        if (root.Position - lastPosition).Magnitude < 0.5 then
+            stuckTime += CFG.ScanDelay
+        else
+            stuckTime = 0
+            lastPosition = root.Position
+        end
+
+        if stuckTime >= CFG.StuckTimeout then
+            setStatus("Bị kẹt — TP về KickReady")
+            forceTP(root, targetCF + Vector3.new(0, 3, 0))
+            return false
+        end
+
+        task.wait(CFG.ScanDelay)
+    end
+
+    return false
+end
+
+-- ================= MAIN LOOP =================
+task.spawn(function()
+    while gui.Parent do
+        if not CFG.Enabled then
+            task.wait(0.2)
+            continue
+        end
+
+        local ok, err = pcall(function()
+            local char, root, hum = getCharacter()
+            if not char then
+                setStatus("Đang chờ nhân vật")
+                return
+            end
+
+            local targetCF = getKickTarget()
+            if not targetCF then
+                setStatus("Không tìm thấy Areas.KickReady")
+                return
+            end
+
+            local safePosition = targetCF.Position
+
+            if (root.Position - safePosition).Magnitude > 10 then
+                setStatus("Đang về điểm kick")
+                forceTP(root, targetCF + Vector3.new(0, 3, 0))
+                task.wait(0.5)
+            end
+
+            if not CFG.Enabled then return end
+
+            local startPosition = root.Position
+            local kickActivatedTime = nil
+            local deadline = os.clock() + CFG.LaunchTimeout
+
+            setStatus("Đang chờ cú đá")
+
+            while CFG.Enabled and hum.Health > 0 and os.clock() < deadline do
+                local button = findKickButton()
+
+                if button and button.Visible then
+                    if activateKick() then
+                        kickActivatedTime = os.clock()
+                        break
+                    end
+                end
+
+                if not root.Parent then return end
+
+                if (root.Position - startPosition).Magnitude > CFG.LaunchDistance then
+                    break
+                end
+
+                task.wait(0.1)
+            end
+
+            if not CFG.Enabled or hum.Health <= 0 then
+                return
+            end
+
+            -- ========== KIỂM TRA TIMEOUT 15s SAU KHI KICKBUTTON ĐÃ KÍCH HOẠT ==========
+            if kickActivatedTime then
+                while CFG.Enabled and hum.Health > 0 do
+                    -- Đã phóng đi chưa?
+                    if (root.Position - startPosition).Magnitude > CFG.LaunchDistance then
+                        break
+                    end
+
+                    -- Quá 15 giây vẫn chưa phóng → Cancel + Restart
+                    if os.clock() - kickActivatedTime >= CFG.AfterKickTimeout then
+                        restartScript()
+                        return
+                    end
+
+                    task.wait(0.15)
+                end
+            end
+
+            task.wait(CFG.PerfectDelay + 0.6)
+
+            if (root.Position - startPosition).Magnitude <= CFG.LaunchDistance then
+                setStatus("Chưa phát hiện phóng đi")
+                return
+            end
+
+            walkBack(root, hum, safePosition, targetCF)
+        end)
+
+        if not ok then
+            warn("[AutoKickSafeRun]", err)
+            setStatus("Lỗi — xem Console")
+        end
+
+        task.wait(CFG.KickCooldown)
+    end
+end)
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/evxncodes/mainroblox/main/anti-afk", true))()
